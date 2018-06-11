@@ -61,6 +61,55 @@ class BLEBackend(object):
         raise NotImplementedError()
 
 
+class Service(object):
+    """
+    A GATT service, including the range of handle values of its associated
+    characteristics and the said characteristics. Only valid for the lifespan
+    of a BLE connection, since the handle values are dynamic.
+    """
+    def __init__(self, uuid, attr_handle_start, attr_handle_end):
+        """
+        Sets the service UUID and handle.
+
+        handle - a bytearray
+        """
+
+        if attr_handle_start > attr_handle_end:
+            raise ValueError()
+
+        self.uuid = uuid
+        self.attr_handle_start = attr_handle_start
+        self.attr_handle_end = attr_handle_end
+        self.characteristics = {
+            # uuid_string: Characteristic
+        }
+        self.descriptors = {
+            # uuid_string: handle
+        }
+
+    def add_characteristic(self, char):
+        """
+        Add a characteristic to the dictionary of characteristic.
+        """
+        if char.handle not in range(self.attr_handle_start,
+                                    self.attr_handle_end + 1):
+            raise ValueError("ATTR pb %x %x %x" % (self.attr_handle_start,
+                                                   char.handle,
+                                                   self.attr_handle_end))
+
+        self.characteristics[char.uuid] = char
+
+    def add_descriptor(self, uuid, handle):
+        """
+        Add a characteristic descriptor to the dictionary of descriptors.
+        """
+        self.descriptors[uuid] = handle
+
+    def __str__(self):
+        return "<%s uuid=%s handle=%d>" % (self.__class__.__name__,
+                                           self.uuid, self.handle)
+
+
 class Characteristic(object):
     """
     A GATT characteristic, including it handle value and associated descriptors.
