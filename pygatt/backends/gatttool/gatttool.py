@@ -33,6 +33,7 @@ else:
 def is_windows():
     return platform.system() == 'Windows'
 
+
 try:
     import pexpect
 except Exception as err:
@@ -427,7 +428,7 @@ class GATTToolBackend(BLEBackend):
         log.info('Bonding')
         self.sendline('sec-level medium')
 
-    def _save_charecteristic_callback(self, event):
+    def _save_characteristic_callback(self, event):
         match = event["match"]
         try:
             value_handle = int(match.group(2), 16)
@@ -448,7 +449,7 @@ class GATTToolBackend(BLEBackend):
         self._characteristics = {}
         self._receiver.register_callback(
             "discover",
-            self._save_charecteristic_callback,
+            self._save_characteristic_callback,
         )
         self.sendline('characteristics')
 

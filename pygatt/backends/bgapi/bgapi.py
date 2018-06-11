@@ -14,10 +14,9 @@ import threading
 from binascii import hexlify, unhexlify
 from uuid import UUID
 from enum import Enum
-from collections import defaultdict
 
 from pygatt.exceptions import NotConnectedError
-from pygatt.backends import BLEBackend, Characteristic, BLEAddressType
+from pygatt.backends import BLEBackend, Service, Characteristic, BLEAddressType
 from pygatt.util import uuid16_to_uuid
 
 from . import bglib, constants
@@ -104,14 +103,19 @@ class BGAPIBackend(BLEBackend):
             # 'address': AdvertisingAndScanInfo,
             # Note: address formatted like "01:23:45:67:89:AB"
         }
-        self._characteristics = defaultdict(dict)
+        self._services = {}
         self._connections = {}
 
-        self._current_characteristic = None  # used in char/descriptor discovery
+        # The following are used in service/char/descriptor discovery
+        self._current_service = None
+        self._current_characteristic = None
+
         self._packet_handlers = {
             ResponsePacketType.sm_get_bonds: self._ble_rsp_sm_get_bonds,
             EventPacketType.attclient_attribute_value: (
                 self._ble_evt_attclient_attribute_value),
+            EventPacketType.attclient_group_found: (
+                self._ble_evt_attclient_group_found),
             EventPacketType.attclient_find_information_found: (
                 self._ble_evt_attclient_find_information_found),
             EventPacketType.connection_status: self._ble_evt_connection_status,
@@ -415,28 +419,50 @@ class BGAPIBackend(BLEBackend):
             exc.__cause__ = None
             raise exc
 
-    def discover_characteristics(self, connection_handle):
-        att_handle_start = 0x0001  # first valid handle
-        att_handle_end = 0xFFFF  # last valid handle
-        log.info("Fetching characteristics for connection %d",
-                 connection_handle)
-        self.send_command(
-            CommandBuilder.attclient_find_information(
-                connection_handle, att_handle_start, att_handle_end))
+    def discover(self, connection_handle):
+        attr_handle_start = 0x0001  # first valid handle
+        attr_handle_end = 0xFFFF  # last valid handle
 
-        self.expect(ResponsePacketType.attclient_find_information)
+        self._services[connection_handle] = {}
+
+        self.send_command(
+            CommandBuilder.attclient_read_by_group_type(
+                connection_handle, attr_handle_start, attr_handle_end,
+                [0x00, 0x28]))
+
+        self.expect(ResponsePacketType.attclient_read_by_group_type)
         self.expect(EventPacketType.attclient_procedure_completed,
                     timeout=10)
 
-        for char_uuid_str, char_obj in (
-                self._characteristics[connection_handle].items()):
-            log.info("Characteristic 0x%s is handle 0x%x",
-                     char_uuid_str, char_obj.handle)
-            for desc_uuid_str, desc_handle in (
-                    char_obj.descriptors.items()):
-                log.info("Characteristic descriptor 0x%s is handle 0x%x",
+        for srvc_uuid_str, srvc_obj in \
+                self._services[connection_handle].items():
+
+            log.info("Fetching characteristics for service %u connection %d",
+                     srvc_uuid_str, connection_handle)
+
+            self._current_service = srvc_obj
+
+            self.send_command(
+                    CommandBuilder.attclient_find_information(
+                        connection_handle,
+                        srvc_obj.attr_handle_start,
+                        srvc_obj.attr_handle_end))
+
+            self.expect(ResponsePacketType.attclient_find_information)
+            self.expect(EventPacketType.attclient_procedure_completed,
+                        timeout=10)
+
+            for desc_uuid_str, desc_handle in srvc_obj.descriptors.items():
+                log.info("Service descriptor %s is handle 0x%x",
                          desc_uuid_str, desc_handle)
-        return self._characteristics[connection_handle]
+
+            for char_uuid_str, char_obj in srvc_obj.characteristics.items():
+                log.info("Characteristic %s is handle 0x%x",
+                         char_uuid_str, char_obj.handle)
+                for desc_uuid_str, desc_handle in char_obj.descriptors.items():
+                    log.info("Characteristic descriptor 0x%s is handle 0x%x",
+                             desc_uuid_str, desc_handle)
+        return self._services[connection_handle]
 
     @staticmethod
     def _connection_status_flag(flags, flag_to_find):
@@ -612,9 +638,34 @@ class BGAPIBackend(BLEBackend):
         log.debug("attribute type = %x", args['type'])
         log.debug("attribute value = 0x%s", hexlify(bytearray(args['value'])))
 
+    def _ble_evt_attclient_group_found(self, args):
+        """
+        Handles the event for service discovery.
+
+        Adds the characteristic to the dictionary of characteristics or adds
+        the descriptor to the dictionary of descriptors in the current
+        characteristic. These events will be occur in an order similar to the
+        following:
+        """
+        log.debug("Service found UUID = %s", args['uuid'])
+        log.debug("Attribute handle start = %x", args['start'])
+        log.debug("Attribute handle end = %x", args['end'])
+
+        raw_uuid = bytearray(reversed(args['uuid']))
+        uuid_type = self._get_uuid_type(raw_uuid)
+        if uuid_type != UUIDType.custom:
+            uuid = uuid16_to_uuid(int(
+                bgapi_address_to_hex(args['uuid']).replace(':', ''), 16))
+        else:
+            uuid = UUID(bytes=bytes(raw_uuid))
+
+        new_srvc = Service(uuid, args['start'], args['end'])
+
+        self._services[args['connection_handle']][uuid] = new_srvc
+
     def _ble_evt_attclient_find_information_found(self, args):
         """
-        Handles the event for characteritic discovery.
+        Handles the event for characteristic discovery.
 
         Adds the characteristic to the dictionary of characteristics or adds
         the descriptor to the dictionary of descriptors in the current
@@ -641,9 +692,16 @@ class BGAPIBackend(BLEBackend):
 
         # TODO is there a way to get the characteristic from the packet instead
         # of having to track the "current" characteristic?
-        if (uuid_type == UUIDType.descriptor and
-                self._current_characteristic is not None):
-            self._current_characteristic.add_descriptor(uuid, args['chrhandle'])
+        if uuid_type == UUIDType.descriptor:
+            log.info("Found descriptor %s" % uuid)
+
+            if self._current_characteristic is not None:
+                self._current_characteristic.add_descriptor(
+                    uuid, args['chrhandle']
+                )
+            elif self._current_service is not None:
+                self._current_service.add_descriptor(uuid, args['chrhandle'])
+
         elif (uuid_type == UUIDType.custom or
                 uuid_type == UUIDType.nonstandard or
                 uuid_type == UUIDType.characteristic):
@@ -655,8 +713,9 @@ class BGAPIBackend(BLEBackend):
                 log.info("Found nonstandard 4-byte characteristic %s" % uuid)
             new_char = Characteristic(uuid, args['chrhandle'])
             self._current_characteristic = new_char
-            self._characteristics[
-                args['connection_handle']][uuid] = new_char
+
+            if self._current_service is not None:
+                self._current_service.add_characteristic(new_char)
 
     def _ble_evt_connection_disconnected(self, args):
         """

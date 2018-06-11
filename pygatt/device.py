@@ -29,7 +29,7 @@ class BLEDevice(object):
         address -- the BLE address (aka MAC address) of the device as a string.
         """
         self._address = address
-        self._characteristics = {}
+        self._services = {}
         self._callbacks = defaultdict(set)
         self._subscribed_handlers = {}
         self._lock = threading.Lock()
@@ -77,7 +77,7 @@ class BLEDevice(object):
         """
         raise NotImplementedError()
 
-    def char_write(self, uuid, value, wait_for_response=False):
+    def char_write(self, uuid, value, srvc_uuid=None, wait_for_response=False):
         """
         Writes a value to a given characteristic UUID.
 
@@ -89,7 +89,7 @@ class BLEDevice(object):
             my_ble_device.char_write('a1e8f5b1-696b-4e4c-87c6-69dfe0b0093b',
                                      bytearray([0x00, 0xFF]))
         """
-        return self.char_write_handle(self.get_handle(uuid), value,
+        return self.char_write_handle(self.get_handle(uuid, srvc_uuid), value,
                                       wait_for_response=wait_for_response)
 
     def char_write_handle(self, handle, value, wait_for_response=False):
@@ -115,9 +115,9 @@ class BLEDevice(object):
         """
         raise NotImplementedError()
 
-    def _notification_handles(self, uuid):
+    def _notification_handles(self, uuid, srvc_uuid=None):
         # Expect notifications on the value handle...
-        value_handle = self.get_handle(uuid)
+        value_handle = self.get_handle(uuid, srvc_uuid)
 
         # but write to the characteristic config to enable notifications
         # TODO with the BGAPI backend we can be smarter and fetch the actual
@@ -128,20 +128,22 @@ class BLEDevice(object):
 
         return value_handle, characteristic_config_handle
 
-    def subscribe(self, uuid, callback=None, indication=False):
+    def subscribe(self, uuid, srvc_uuid=None, callback=None, indication=False):
         """
         Enable notifications or indications for a characteristic and register a
         callback function to be called whenever a new value arrives.
 
         uuid -- UUID as a string of the characteristic to subscribe.
+        srvc_uuid -- UUID as a string of the service where the characteristic
+                     to subscribe is.
         callback -- function to be called when a notification/indication is
                     received on this characteristic.
-        indication -- use indications (where each notificaiton is ACKd). This is
-                      more reliable, but slower.
+        indication -- use indications (where each notification is
+                      acknowledged). This is more reliable, but slower.
         """
 
         value_handle, characteristic_config_handle = (
-            self._notification_handles(uuid)
+            self._notification_handles(uuid, srvc_uuid)
         )
 
         properties = bytearray([
@@ -188,22 +190,42 @@ class BLEDevice(object):
             else:
                 log.debug("Already unsubscribed from uuid=%s", uuid)
 
-    def get_handle(self, char_uuid):
+    def __find_char(self, char_uuid, srvc_uuid=None):
+        for srvc_uuid_str, srvc_obj in self._services.items():
+            if srvc_uuid is None or srvc_uuid == srvc_obj:
+                for char_uuid_str, char_obj in srvc_obj.characteristics.items():
+                    if char_obj == char_uuid:
+                        return char_obj
+        return None
+
+    def get_handle(self, char_uuid, srvc_uuid=None):
         """
         Look up and return the handle for an attribute by its UUID.
         :param char_uuid: The UUID of the characteristic.
-        :type uuid: str
+        :type uuid: str or UUID
+        :param srvc_uuid: The UUID of the service the characteristic is in.
+        :type uuid: str or UUID
         :return: None if the UUID was not found.
         """
         if isinstance(char_uuid, string_type):
             char_uuid = UUID(char_uuid)
-        log.debug("Looking up handle for characteristic %s", char_uuid)
-        if char_uuid not in self._characteristics:
-            self._characteristics = self.discover_characteristics()
 
-        characteristic = self._characteristics.get(char_uuid)
+        if srvc_uuid is not None and isinstance(srvc_uuid, string_type):
+            srvc_uuid = UUID(srvc_uuid)
+        log.debug("Looking up handle for characteristic %s", char_uuid)
+
+        characteristic = self.__find_char(char_uuid, srvc_uuid)
+
         if characteristic is None:
-            message = "No characteristic found matching %s" % char_uuid
+            # Reload the database to update it, with some luck the
+            # characteristic will be in there now.
+            self._services = self.discover()
+
+        characteristic = self.__find_char(char_uuid, srvc_uuid)
+
+        if characteristic is None:
+            message = "No characteristic found matching %s %s" % \
+                      (char_uuid, srvc_uuid if srvc_uuid is not None else '')
             log.warn(message)
             raise exceptions.BLEError(message)
 

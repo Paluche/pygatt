@@ -71,8 +71,9 @@ class BGAPIBLEDevice(BLEDevice):
         raise BGAPIError("get rssi failed")
 
     @connection_required
-    def char_read(self, uuid, timeout=None):
-        return self.char_read_handle(self.get_handle(uuid), timeout=timeout)
+    def char_read(self, uuid, srvc_uuid=None, timeout=None):
+        return self.char_read_handle(self.get_handle(uuid, srvc_uuid),
+                                     timeout=timeout)
 
     @connection_required
     def char_read_handle(self, handle, timeout=None):
@@ -136,7 +137,6 @@ class BGAPIBLEDevice(BLEDevice):
         self._handle = None
 
     @connection_required
-    def discover_characteristics(self):
-        self._characteristics = self._backend.discover_characteristics(
-            self._handle)
-        return self._characteristics
+    def discover(self):
+        self._services = self._backend.discover(self._handle)
+        return self._services
