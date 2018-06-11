@@ -33,6 +33,7 @@ else:
 def is_windows():
     return platform.system() == 'Windows'
 
+
 try:
     import pexpect
 except Exception as err:
