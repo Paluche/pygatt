@@ -665,7 +665,7 @@ class BGAPIBackend(BLEBackend):
 
     def _ble_evt_attclient_find_information_found(self, args):
         """
-        Handles the event for characteritic discovery.
+        Handles the event for characteristic discovery.
 
         Adds the characteristic to the dictionary of characteristics or adds
         the descriptor to the dictionary of descriptors in the current
