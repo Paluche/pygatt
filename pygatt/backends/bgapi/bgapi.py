@@ -14,7 +14,6 @@ import threading
 from binascii import hexlify, unhexlify
 from uuid import UUID
 from enum import Enum
-from collections import defaultdict
 
 from pygatt.exceptions import NotConnectedError
 from pygatt.backends import BLEBackend, Characteristic, BLEAddressType
